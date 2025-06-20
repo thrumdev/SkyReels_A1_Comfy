@@ -1,3 +1,5 @@
+#modified this file to eliminate the dependency on chumpy. 
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -6,7 +8,7 @@ from pytorch3d.structures import Meshes
 from pytorch3d.io import load_obj
 from pytorch3d.renderer.mesh import rasterize_meshes
 import pickle
-import chumpy as ch
+#import chumpy as ch
 import cv2
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -59,7 +61,8 @@ def mesh_points_by_barycentric_coordinates(mesh_verts, mesh_faces, lmk_face_idx,
     """
     Evaluation 3d points given mesh and landmark embedding
     """
-    dif1 = ch.vstack([
+    # This line was changed from ch.vstack to np.vstack
+    dif1 = np.vstack([
         (mesh_verts[mesh_faces[lmk_face_idx], 0] * lmk_b_coords).sum(axis=1),
         (mesh_verts[mesh_faces[lmk_face_idx], 1] * lmk_b_coords).sum(axis=1),
         (mesh_verts[mesh_faces[lmk_face_idx], 2] * lmk_b_coords).sum(axis=1)
