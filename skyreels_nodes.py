@@ -6,15 +6,15 @@ import cv2
 import folder_paths
 
 # Import classes from the original SkyReels-A1 codebase
-from skyreels_a1.pre_process_lmk3d import FaceAnimationProcessor
-from skyreels_a1.src.media_pipe.mp_utils import LMKExtractor
-from skyreels_a1.src.media_pipe.draw_util_2d import FaceMeshVisualizer2d
+from .skyreels_a1.pre_process_lmk3d import FaceAnimationProcessor
+from .skyreels_a1.src.media_pipe.mp_utils import LMKExtractor
+from .skyreels_a1.src.media_pipe.draw_util_2d import FaceMeshVisualizer2d
 from facexlib.utils.face_restoration_helper import FaceRestoreHelper
-from skyreels_a1.skyreels_a1_i2v_long_pipeline import SkyReelsA1ImagePoseToVideoPipeline
-from skyreels_a1.models.transformer3d import CogVideoXTransformer3DModel
+from .skyreels_a1.skyreels_a1_i2v_long_pipeline import SkyReelsA1ImagePoseToVideoPipeline
+from .skyreels_a1.models.transformer3d import CogVideoXTransformer3DModel
 from diffusers.models import AutoencoderKLCogVideoX
 from transformers import SiglipVisionModel, SiglipImageProcessor
-from diffposetalk.utils.common import OneEuroFilter  # Import the filter
+from .diffposetalk.utils.common import OneEuroFilter  # Import the filter
 
 # A simple cache for loaded models to avoid reloading
 LOADED_MODELS = {}
