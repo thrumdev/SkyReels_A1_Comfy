@@ -170,7 +170,7 @@ def retrieve_latents(
         raise AttributeError("Could not access latents of provided encoder_output")
 
 
-class SkyReelsA1ImagePoseToVideoPipeline(DiffusionPipeline):
+class SkyReelsA1InpaintPoseToVideoPipeline(DiffusionPipeline):
     r"""
     Pipeline for image-to-video generation using CogVideoX.
 
@@ -248,6 +248,48 @@ class SkyReelsA1ImagePoseToVideoPipeline(DiffusionPipeline):
             save_ext='png',
         ) 
 
+    # def _encode_image(self, image, device, num_videos_per_prompt, do_classifier_free_guidance):
+    #     dtype = next(self.image_encoder.parameters()).dtype
+
+    #     if not isinstance(image, torch.Tensor):
+    #         image = self.image_processor.pil_to_numpy(image)
+    #         image = self.image_processor.numpy_to_pt(image)
+
+    #         # We normalize the image before resizing to match with the original implementation.
+    #         # Then we unnormalize it after resizing.
+    #         image = image * 2.0 - 1.0
+    #         image = _resize_with_antialiasing(image, (224, 224))
+    #         image = (image + 1.0) / 2.0
+
+    #         # Normalize the image with for CLIP input
+    #         image = self.feature_extractor(
+    #             images=image,
+    #             do_normalize=True,
+    #             do_center_crop=False,
+    #             do_resize=False,
+    #             do_rescale=False,
+    #             return_tensors="pt",
+    #         ).pixel_values
+
+    #     image = image.to(device=device, dtype=dtype)
+    #     image_embeddings = self.image_encoder(image).image_embeds
+    #     image_embeddings = image_embeddings.unsqueeze(1).repeat(1, 226, 1)
+    #     # image_embeddings = image_embeddings.unsqueeze(1)
+
+    #     # duplicate image embeddings for each generation per prompt, using mps friendly method
+    #     # bs_embed, seq_len, _ = image_embeddings.shape
+    #     # image_embeddings = image_embeddings.repeat(1, num_videos_per_prompt, 1)
+    #     # image_embeddings = image_embeddings.view(bs_embed * num_videos_per_prompt, seq_len, -1)
+
+    #     if do_classifier_free_guidance:
+    #         negative_image_embeddings = torch.zeros_like(image_embeddings)
+
+    #         # For classifier free guidance, we need to do two forward passes.
+    #         # Here we concatenate the unconditional and text embeddings into a single batch
+    #         # to avoid doing two forward passes
+    #         image_embeddings = torch.cat([negative_image_embeddings, image_embeddings])
+
+    #     return image_embeddings
 
     def _encode_image(self, image, device, num_videos_per_prompt, do_classifier_free_guidance):
         dtype = next(self.image_encoder.parameters()).dtype
@@ -392,6 +434,44 @@ class SkyReelsA1ImagePoseToVideoPipeline(DiffusionPipeline):
             )
 
         return prompt_embeds, negative_prompt_embeds
+    
+    def prepare_video_latents(
+        self,
+        video: torch.Tensor,
+        mask: torch.Tensor,
+        dtype: torch.dtype,
+        device: torch.device,
+        generator: torch.Generator,
+    ):
+        # video and mask are assumed to be torch.Tensor of shape (B, C, F, H, W)
+
+        # 1. Encode the original video to get the initial latents for the unmasked area.
+        init_latents_dist = self.vae.encode(video)
+        init_latents = init_latents_dist.latent_dist.sample(generator)
+        init_latents = self.vae.config.scaling_factor * init_latents
+
+        # 2. Create a noise tensor for the masked area.
+        noise = randn_tensor(init_latents.shape, generator=generator, device=device, dtype=dtype)
+        noise = noise * self.scheduler.init_noise_sigma
+
+        # 3. Downsample the mask to the size of the latents.
+        latent_mask = torch.nn.functional.interpolate(
+            mask,
+            size=init_latents.shape[2:],  # Interpolate on (F, H, W)
+            mode='trilinear',
+            align_corners=False
+        )
+
+        # 4. Combine the initial latents and noise based on the mask.
+        # The masked area (latent_mask=1) is filled with noise, the unmasked area (latent_mask=0) keeps the original latents.
+        latents = init_latents * (1.0 - latent_mask) + noise * latent_mask
+
+        # 5. Permute latents for the transformer model, which expects (B, F, C, H, W)
+        latents = latents.permute(0, 2, 1, 3, 4)
+
+        # This function now correctly returns only the initial latents for the denoising loop.
+        # The model-specific conditioning (control_video, image_latents) is handled elsewhere.
+        return latents
 
     def prepare_latents(
         self,
@@ -454,81 +534,40 @@ class SkyReelsA1ImagePoseToVideoPipeline(DiffusionPipeline):
         latents = latents * self.scheduler.init_noise_sigma
         return latents, image_latents
 
-    def prepare_video_latents(
-        self, video, batch_size, num_frames, height, width, dtype, device, generator, mask=None, latents=None
-    ):
-        shape = (
-            batch_size,
-            num_frames,
-            self.vae.config.latent_channels,
-            height // self.vae_scale_factor,
-            width // self.vae_scale_factor,
-        )
-
-        if latents is None:
-            if video is None:
-                raise ValueError("A `video` must be provided for video-to-video generation.")
-            
-            # Encode the full source video
-            video = video.to(device=device, dtype=dtype)
-            
-            # Process video frame by frame to avoid OOM issues
-            video_latents_list = []
-            for i in range(num_frames):
-                frame = video[:, :, i, :, :] # Assuming (B, C, F, H, W) input
-                if frame.dim() == 5:
-                    frame = frame.squeeze(2)
-                frame_latent = self.vae.encode(frame).latent_dist.sample(generator)
-                video_latents_list.append(frame_latent)
-
-            video_latents = torch.stack(video_latents_list, dim=2) # (B, C, F, H_latent, W_latent)
-            video_latents = self.vae.config.scaling_factor * video_latents
-
-            if mask is None:
-                # If no mask, the initial latents are just the encoded video.
-                # The diffusion process will add noise during sampling.
-                latents = video_latents
-            else:
-                # Prepare noise for the masked area
-                noise = randn_tensor(video_latents.shape, generator=generator, device=device, dtype=dtype)
-                
-                # Prepare the mask
-                mask = mask.to(device=device, dtype=dtype)
-                mask_latents = F.interpolate(mask, size=(height // self.vae_scale_factor, width // self.vae_scale_factor))
-                
-                if mask_latents.dim() == 4: # Static mask (B, 1, H, W)
-                    mask_latents = mask_latents.unsqueeze(2).repeat(1, 1, num_frames, 1, 1)
-                
-                # Combine video latents and noise using the mask
-                # Where mask is 1 (hole), use noise. Where mask is 0 (context), use video_latents.
-                latents = video_latents * (1 - mask_latents) + noise * mask_latents
-        else:
-            latents = latents.to(device=device, dtype=dtype) * self.vae.config.scaling_factor
-
-        return latents
-
     def prepare_control_latents(
-        self, control_video, batch_size, num_frames, height, width, dtype, device, generator, latents=None
+        self, mask, masked_image, batch_size, height, width, dtype, device, generator, do_classifier_free_guidance
     ):
         # resize the mask to latents shape as we concatenate the mask to the latents
         # we do that before converting to dtype to avoid breaking in case we're using cpu_offload
         # and half precision
 
-        if control_video is not None:
-            control_video = control_video.to(device=device, dtype=self.lmk_encoder.dtype)
+        if mask is not None:
+            mask = mask.to(device=device, dtype=self.lmk_encoder.dtype)
             bs = 1
-            new_control_video_latents = []
-            for i in range(0, control_video.shape[0], bs):
-                control_video_bs = control_video[i : i + bs]
-                control_video_bs = self.lmk_encoder.encode(control_video_bs)[0]
-                control_video_bs = control_video_bs.mode()
-                new_control_video_latents.append(control_video_bs)
-            control_video_latents = torch.cat(new_control_video_latents, dim = 0)
-            control_video_latents = control_video_latents * self.lmk_encoder.config.scaling_factor
-        else:
-            control_video_latents = None
+            new_mask = []
+            for i in range(0, mask.shape[0], bs):
+                mask_bs = mask[i : i + bs]
+                mask_bs = self.lmk_encoder.encode(mask_bs)[0]
+                mask_bs = mask_bs.mode()
+                new_mask.append(mask_bs)
+            mask = torch.cat(new_mask, dim = 0)
+            mask = mask * self.lmk_encoder.config.scaling_factor
 
-        return control_video_latents
+        if masked_image is not None:
+            masked_image = masked_image.to(device=device, dtype=self.lmk_encoder.dtype)
+            bs = 1
+            new_mask_pixel_values = []
+            for i in range(0, masked_image.shape[0], bs):
+                mask_pixel_values_bs = masked_image[i : i + bs]
+                mask_pixel_values_bs = self.lmk_encoder.encode(mask_pixel_values_bs)[0]
+                mask_pixel_values_bs = mask_pixel_values_bs.mode()
+                new_mask_pixel_values.append(mask_pixel_values_bs)
+            masked_image_latents = torch.cat(new_mask_pixel_values, dim = 0)
+            masked_image_latents = masked_image_latents * self.lmk_encoder.config.scaling_factor
+        else:
+            masked_image_latents = None
+
+        return mask, masked_image_latents
 
     # Copied from diffusers.pipelines.cogvideo.pipeline_cogvideox.CogVideoXPipeline.decode_latents
     def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
@@ -635,26 +674,6 @@ class SkyReelsA1ImagePoseToVideoPipeline(DiffusionPipeline):
         freqs_cos = freqs_cos.to(device=device)
         freqs_sin = freqs_sin.to(device=device)
         return freqs_cos, freqs_sin
-    
-    def weighted_blending(self, latents, latents_cache, overlap_frame_num):
-        overlap_frame_num_latent = overlap_frame_num // 4
-
-        F = latents.shape[1]
-
-        first_latent = latents[:, 0:1]
-        latents = latents[:, 1:]
-
-        overlap_latents = []
-        for j in range(overlap_frame_num_latent):
-            weight = (overlap_frame_num_latent - j) / overlap_frame_num_latent
-            fused_latent = weight * latents_cache[:, -overlap_frame_num_latent+j] + (1 - weight) * latents[:, j]
-            overlap_latents.append(fused_latent)
-        latents = torch.cat([first_latent, torch.stack(overlap_latents, dim=1), latents[:, overlap_frame_num_latent:]], dim=1)
-
-        assert latents.shape[1] == F
-
-        return latents
-        
 
     @property
     def guidance_scale(self):
@@ -680,15 +699,12 @@ class SkyReelsA1ImagePoseToVideoPipeline(DiffusionPipeline):
         image_face: PipelineImageInput,
         video: Union[torch.FloatTensor] = None,
         control_video: Union[torch.FloatTensor] = None,
+        mask: Optional[torch.FloatTensor] = None,
         prompt: Optional[Union[str, List[str]]] = None,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         height: int = 480,
         width: int = 720,
         num_frames: int = 49,
-        is_last_batch: bool = False,
-        overlap_frame_num: int = 0,
-        fusion_interval: List[int] = [],
-        latents_cache: Optional[List[torch.FloatTensor]] = [],
         num_inference_steps: int = 50,
         timesteps: Optional[List[int]] = None,
         guidance_scale: float = 6,
@@ -790,6 +806,11 @@ class SkyReelsA1ImagePoseToVideoPipeline(DiffusionPipeline):
             `tuple`. When returning a tuple, the first element is a list with the generated images.
         """
 
+        if num_frames > 49:
+            raise ValueError(
+                "The number of frames must be less than 49 for now due to static positional embeddings. This will be updated in the future to remove this limitation."
+            )
+
         if isinstance(callback_on_step_end, (PipelineCallback, MultiPipelineCallbacks)):
             callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
 
@@ -826,13 +847,15 @@ class SkyReelsA1ImagePoseToVideoPipeline(DiffusionPipeline):
         self._num_timesteps = len(timesteps)
 
         # 5. Prepare latents
-        image = self.video_processor.preprocess(image, height=height, width=width).to(
+        image_for_latents = self.video_processor.preprocess(image, height=height, width=width).to(
             device, dtype=image_embeddings.dtype
         )
 
         latent_channels = self.transformer.config.in_channels // 3
-        latents, image_latents = self.prepare_latents(
-            image,
+
+        # Prepare identity conditioning latents
+        _, image_latents = self.prepare_latents(
+            image_for_latents,
             batch_size * num_videos_per_prompt,
             latent_channels,
             num_frames,
@@ -841,8 +864,35 @@ class SkyReelsA1ImagePoseToVideoPipeline(DiffusionPipeline):
             image_embeddings.dtype,
             device,
             generator,
-            latents,
+            latents=None, # Pass None to ensure we only get the image_latents
         )
+
+        # Prepare the initial latents for the denoising loop
+        if video is not None and mask is not None:
+            # Inpainting logic: create latents from video and mask
+            latents = self.prepare_video_latents(
+                video=video,
+                mask=mask,
+                dtype=image_embeddings.dtype,
+                device=device,
+                generator=generator,
+            )
+        else:
+            # Standard logic: create random noise latents
+            shape = (
+                batch_size * num_videos_per_prompt,
+                (num_frames - 1) // self.vae_scale_factor_temporal + 1,
+                latent_channels,
+                height // self.vae_scale_factor_spatial,
+                width // self.vae_scale_factor_spatial,
+            )
+            if latents is None:
+                latents = randn_tensor(shape, generator=generator, device=device, dtype=image_embeddings.dtype)
+            else:
+                latents = latents.to(device)
+            # Scale the initial noise by the standard deviation required by the scheduler
+            latents = latents * self.scheduler.init_noise_sigma
+
 
         if control_video is not None:
             video_length = control_video.shape[2]
@@ -882,19 +932,12 @@ class SkyReelsA1ImagePoseToVideoPipeline(DiffusionPipeline):
         # 8. Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
 
-        latents_cache_return = []
-
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             # for DPM-solver++
             old_pred_original_sample = None
             for i, t in enumerate(timesteps):
                 if self.interrupt:
                     continue
-                
-                if fusion_interval and latents_cache:
-                    assert fusion_interval[1] < num_inference_steps, f"fusion_interval: {fusion_interval} is larger than num_inference_steps: {num_inference_steps}"
-                    if fusion_interval[0] < i < fusion_interval[1]:
-                        latents = self.weighted_blending(latents, latents_cache[i], overlap_frame_num)
 
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
@@ -937,7 +980,7 @@ class SkyReelsA1ImagePoseToVideoPipeline(DiffusionPipeline):
                         **extra_step_kwargs,
                         return_dict=False,
                     )
-                latents = latents.to(image_embeddings.dtype)  # [batch_size, num_frames, num_channels, height, width]
+                latents = latents.to(image_embeddings.dtype)
 
                 # call the callback, if provided
                 if callback_on_step_end is not None:
@@ -947,9 +990,6 @@ class SkyReelsA1ImagePoseToVideoPipeline(DiffusionPipeline):
                     callback_outputs = callback_on_step_end(self, i, t, callback_kwargs)
 
                     latents = callback_outputs.pop("latents", latents)
-                
-                if not is_last_batch and overlap_frame_num > 0:
-                    latents_cache_return.append(latents)
 
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
@@ -966,4 +1006,4 @@ class SkyReelsA1ImagePoseToVideoPipeline(DiffusionPipeline):
         if not return_dict:
             return (video,)
 
-        return CogVideoXPipelineOutput(frames=video), latents_cache_return
+        return CogVideoXPipelineOutput(frames=video)

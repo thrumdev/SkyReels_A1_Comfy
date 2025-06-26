@@ -16,7 +16,15 @@ from skyreels_a1.src.utils.mediapipe_utils import MediaPipeUtils
 from skyreels_a1.src.smirk_encoder import SmirkEncoder
 from skyreels_a1.src.FLAME.FLAME import FLAME
 from skyreels_a1.src.renderer import Renderer
-from moviepy.editor import ImageSequenceClip
+
+def smooth_params(data, alpha=0.7):
+    if not data:
+        return []
+    smoothed_data = [data[0]]
+    for i in range(1, len(data)):
+        smoothed_value = alpha * data[i] + (1 - alpha) * smoothed_data[i-1]
+        smoothed_data.append(smoothed_value)
+    return smoothed_data
 
 class FaceAnimationProcessor:
     def __init__(self, device='cuda', checkpoint="pretrained_models/smirk/smirk_encoder.pt"):
@@ -151,13 +159,6 @@ class FaceAnimationProcessor:
         source_outputs['eye_pose_params'] = torch.tensor(mediapipe_eye_pose).to(self.device)
         return source_outputs, tform, image_rgb
 
-    def smooth_params(self, data, alpha=0.7):
-        smoothed_data = [data[0]]
-        for i in range(1, len(data)):
-            smoothed_value = alpha * data[i] + (1 - alpha) * smoothed_data[i-1]
-            smoothed_data.append(smoothed_value)
-        return smoothed_data
-
     def process_driving_img_list(self, img_list, input_size=224):
         driving_frames = []
         driving_outputs = []
@@ -201,7 +202,37 @@ class FaceAnimationProcessor:
         driving_outputs_list = []
         source_pose_init = source_outputs['pose_params'].clone()
         driving_outputs_pose = [outputs['pose_params'] for outputs in driving_outputs]
-        driving_outputs_pose = self.smooth_params(driving_outputs_pose)
+        driving_outputs_pose = smooth_params(driving_outputs_pose)
+        for i, outputs in enumerate(driving_outputs):
+            outputs['pose_params'] = driving_outputs_pose[i]
+            source_outputs['expression_params'] = outputs['expression_params']
+            source_outputs['jaw_params'] = outputs['jaw_params']
+            source_outputs['eye_pose_params'] = outputs['eye_pose_params']
+            source_matrix = self.rodrigues_to_matrix(source_pose_init)
+            driving_matrix_0 = self.rodrigues_to_matrix(driving_outputs[0]['pose_params'])
+            driving_matrix_i = self.rodrigues_to_matrix(driving_outputs[i]['pose_params'])
+            relative_rotation = torch.inverse(driving_matrix_0) @ driving_matrix_i
+            new_rotation = source_matrix @ relative_rotation
+            source_outputs['pose_params'] = self.matrix_to_rodrigues(new_rotation)
+            source_outputs['eyelid_params'] = outputs['eyelid_params']
+            flame_output = self.flame.forward(source_outputs)
+            renderer_output = self.renderer.forward(
+                flame_output['vertices'],
+                source_outputs['cam'],
+                landmarks_fan=flame_output['landmarks_fan'], source_tform=source_tform,
+                tform_512=None, weights_468=weights_468[i], weights_473=weights_473[i],
+                landmarks_mp=flame_output['landmarks_mp'], shape=image_original.shape)
+            rendered_img = renderer_output['rendered_img']
+            driving_outputs_list.extend(np.copy(rendered_img)[np.newaxis, :])
+        return driving_outputs_list
+    
+    def preprocess_lmk3d_from_outputs(self, source_image=None, driving_outputs=None, 
+                                      weights_473=None, weights_468=None):
+        source_outputs, source_tform, image_original = self.process_source_image(source_image)
+        driving_outputs_list = []
+        source_pose_init = source_outputs['pose_params'].clone()
+        driving_outputs_pose = [outputs['pose_params'] for outputs in driving_outputs]
+        driving_outputs_pose = smooth_params(driving_outputs_pose)
         for i, outputs in enumerate(driving_outputs):
             outputs['pose_params'] = driving_outputs_pose[i]
             source_outputs['expression_params'] = outputs['expression_params']
@@ -229,7 +260,7 @@ class FaceAnimationProcessor:
         driving_outputs_list = []
         source_pose_init = source_outputs['pose_params'].clone()
         driving_outputs_pose = [outputs['pose_params'] for outputs in driving_outputs]
-        driving_outputs_pose = self.smooth_params(driving_outputs_pose)
+        driving_outputs_pose = smooth_params(driving_outputs_pose)
         for i, outputs in enumerate(driving_outputs):
             outputs['pose_params'] = driving_outputs_pose[i]
             source_outputs['expression_params'] = outputs['expression_params']
@@ -248,6 +279,33 @@ class FaceAnimationProcessor:
                 source_outputs['cam'],
                 landmarks_fan=flame_output['landmarks_fan'], source_tform=source_tform,
                 tform_512=None, weights_468=None, weights_473=None,
+                landmarks_mp=flame_output['landmarks_mp'], shape=render_shape)
+            rendered_img = renderer_output['rendered_img']
+            driving_outputs_list.extend(np.copy(rendered_img)[np.newaxis, :])
+        return driving_outputs_list
+
+    def render_lmk3d_from_coef(self, source_outputs, source_tform, render_shape, driving_outputs, weights_473=None, weights_468=None):
+        driving_outputs_list = []
+        source_pose_init = source_outputs['pose_params'].clone()
+        for i, outputs in enumerate(driving_outputs):
+            source_outputs['expression_params'] = outputs['expression_params']
+            source_outputs['jaw_params'] = outputs['jaw_params']
+            source_outputs['eye_pose_params'] = outputs['eye_pose_params']
+            source_matrix = self.rodrigues_to_matrix(source_pose_init)
+            driving_matrix_0 = self.rodrigues_to_matrix(driving_outputs[0]['pose_params'])
+            driving_matrix_i = self.rodrigues_to_matrix(outputs['pose_params'])
+            relative_rotation = torch.inverse(driving_matrix_0) @ driving_matrix_i
+            new_rotation = source_matrix @ relative_rotation
+            source_outputs['pose_params'] = self.matrix_to_rodrigues(new_rotation)
+            source_outputs['eyelid_params'] = outputs['eyelid_params']
+            flame_output = self.flame.forward(source_outputs)
+            renderer_output = self.renderer.forward(
+                flame_output['vertices'],
+                source_outputs['cam'],
+                landmarks_fan=flame_output['landmarks_fan'], source_tform=source_tform,
+                tform_512=None, 
+                weights_468=weights_468[i] if weights_468 is not None else None, 
+                weights_473=weights_473[i] if weights_473 is not None else None,
                 landmarks_mp=flame_output['landmarks_mp'], shape=render_shape)
             rendered_img = renderer_output['rendered_img']
             driving_outputs_list.extend(np.copy(rendered_img)[np.newaxis, :])
@@ -299,53 +357,3 @@ class FaceAnimationProcessor:
         x1, y1, x2, y2 = global_box
         return image[y1:y2, x1:x2]
 
-    def process_video(self, source_image_path, driving_video_path, output_path, sample_size=[480, 720]):
-        image = load_image(source_image_path)
-        image = self.crop_and_resize(image, sample_size[0], sample_size[1])
-        ref_image = np.array(image)
-        ref_image, x1, y1 = self.face_crop(ref_image)
-        face_h, face_w, _ = ref_image.shape
-
-        vr = VideoReader(driving_video_path)
-        fps = vr.get_avg_fps()
-        video_length = len(vr)
-        duration = video_length / fps
-        target_times = np.arange(0, duration, 1/12)
-        frame_indices = (target_times * fps).astype(np.int32)
-        frame_indices = frame_indices[frame_indices < video_length]
-        control_frames = vr.get_batch(frame_indices).asnumpy()[:48]
-        if len(control_frames) < 49:
-            video_lenght_add = 49 - len(control_frames)
-        control_frames = np.concatenate(([control_frames[0]]*2, control_frames[1:len(control_frames)-2], [control_frames[-1]] * video_lenght_add), axis=0)
-
-        control_frames_crop = []
-        global_box = self.get_global_bbox(control_frames)
-        for control_frame in control_frames:
-            frame = self.face_crop_with_global_box(control_frame, global_box)
-            control_frames_crop.append(frame)
-
-        out_frames = self.preprocess_lmk3d(source_image=ref_image, driving_image_list=control_frames_crop)
-
-        def write_mp4(video_path, samples, fps=14):
-            clip = ImageSequenceClip(samples, fps=fps)
-            clip.write_videofile(video_path, codec='libx264', ffmpeg_params=["-pix_fmt", "yuv420p", "-crf", "23", "-preset", "medium"])
-
-        concat_frames = []
-        for i in range(len(out_frames)):
-            ref_image_concat = ref_image.copy()
-            driving_frame = cv2.resize(control_frames_crop[i], (face_w, face_h))
-            out_frame = cv2.resize(out_frames[i], (face_w, face_h))
-            concat_frame = np.concatenate([ref_image_concat, driving_frame, out_frame], axis=1)
-            concat_frame = self.ensure_even_dimensions(concat_frame)
-            concat_frames.append(concat_frame)
-        write_mp4(output_path, concat_frames, fps=12)
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Process video and image for face animation.")
-    parser.add_argument('--source_image', type=str, default="assets/ref_images/1.png", help='Path to the source image.')
-    parser.add_argument('--driving_video', type=str, default="assets/driving_video/1.mp4", help='Path to the driving video.')
-    parser.add_argument('--output_path', type=str, default="./output.mp4", help='Path to save the output video.')
-    args = parser.parse_args()
-
-    processor = FaceAnimationProcessor(checkpoint='pretrained_models/smirk/SMIRK_em1.pt')
-    processor.process_video(args.source_image, args.driving_video, args.output_path)

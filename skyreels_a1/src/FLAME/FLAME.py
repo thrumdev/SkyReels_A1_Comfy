@@ -47,8 +47,8 @@ class FLAME(nn.Module):
     Given flame parameters this class generates a differentiable FLAME function
     which outputs the a mesh and 2D/3D facial landmarks
     """
-    def __init__(self, flame_model_path='pretrained_models/FLAME/generic_model.pkl', 
-                 flame_lmk_embedding_path='pretrained_models/FLAME/landmark_embedding.npy', n_shape=300, n_exp=50):
+    def __init__(self, flame_model_path='skyreels/FLAME/generic_model.pkl', 
+                 flame_lmk_embedding_path='skyreels/FLAME/landmark_embedding.npy', n_shape=300, n_exp=50):
         super(FLAME, self).__init__()
 
         with open(flame_model_path, 'rb') as f:
@@ -78,8 +78,8 @@ class FLAME(nn.Module):
         self.register_buffer('lbs_weights', to_tensor(to_np(flame_model.weights), dtype=self.dtype))
 
 
-        self.register_buffer('l_eyelid', torch.from_numpy(np.load(f'pretrained_models/smirk/l_eyelid.npy')).to(self.dtype)[None])
-        self.register_buffer('r_eyelid', torch.from_numpy(np.load(f'pretrained_models/smirk/r_eyelid.npy')).to(self.dtype)[None])
+        self.register_buffer('l_eyelid', torch.from_numpy(np.load(f'skyreels/smirk/l_eyelid.npy')).to(self.dtype)[None])
+        self.register_buffer('r_eyelid', torch.from_numpy(np.load(f'skyreels/smirk/r_eyelid.npy')).to(self.dtype)[None])
         # import pdb;pdb.set_trace()
 
         # Fixing Eyeball and neck rotation
@@ -107,7 +107,7 @@ class FLAME(nn.Module):
             curr_idx = self.parents[curr_idx]
         self.register_buffer('neck_kin_chain', torch.stack(neck_kin_chain))
 
-        lmk_embeddings_mp = np.load("pretrained_models/smirk/mediapipe_landmark_embedding.npz")
+        lmk_embeddings_mp = np.load("skyreels/smirk/mediapipe_landmark_embedding.npz")
         self.register_buffer('mp_lmk_faces_idx', torch.from_numpy(lmk_embeddings_mp['lmk_face_idx'].astype('int32')).long())
         self.register_buffer('mp_lmk_bary_coords', torch.from_numpy(lmk_embeddings_mp['lmk_b_coords']).to(self.dtype))
 
