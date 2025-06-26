@@ -129,7 +129,7 @@ class SkyReelsSampler:
                 "seed": ("INT", {"default": 42, "min": 0, "max": 0xffffffffffffffff}),
                 "guidance_scale": ("FLOAT", {"default": 3.0, "min": 0.0, "max": 10.0, "step": 0.1}),
                 "num_inference_steps": ("INT", {"default": 10, "min": 1, "max": 100}),
-                "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,}),
+                "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Leave on 1.0 unless in inpainting mode"}),
                 "inpaint_mode": ("BOOLEAN", {"default": False, "tooltip": "Enable inpainting mode to use the mask input."}),
             },
             "optional": {
@@ -197,7 +197,7 @@ class SkyReelsSampler:
         LOADED_MODELS[cache_key] = pipe
         return pipe
 
-    def sample(self, model, pose_guider, vae, source_image, landmark_images, smirk_checkpoint, seed, guidance_scale, num_inference_steps, denoise, inpaint_mode, source_video=None, mask=None):
+    def sample(self, model, pose_guider, vae, source_image, landmark_images, smirk_checkpoint, seed, denoise, guidance_scale, num_inference_steps, inpaint_mode, source_video=None, mask=None):
         # Load models and helpers
         pipe = self._load_pipeline(model, pose_guider, vae, inpaint_mode)
         face_helper = self._load_model("face_restore_helper", FaceRestoreHelper, upscale_factor=1, face_size=512, crop_ratio=(1, 1), det_model='retinaface_resnet50', save_ext='png', device=DEVICE)
@@ -280,36 +280,19 @@ class SkyReelsSampler:
             video_for_pipeline = source_video.permute(3, 0, 1, 2).unsqueeze(0)
             pipeline_args["video"] = video_for_pipeline.to(device=DEVICE, dtype=pipe.torch_dtype)
 
+            pipeline_args["strength"] = denoise
+
             # support per-frame mask stacks [F, H, W] or a single 2D mask [H, W]
             if isinstance(mask, torch.Tensor) and mask.ndim == 3:
-                # mask is [F, H, W]
                 mask_for_pipeline = mask.unsqueeze(0).unsqueeze(1)  # [1, 1, F, H, W]
             else:
-                # single-frame mask, repeat across all frames
                 mask_for_pipeline = mask.unsqueeze(0).unsqueeze(0).unsqueeze(0).repeat(1, 1, num_frames, 1, 1)
             pipeline_args["mask"] = mask_for_pipeline.to(device=DEVICE, dtype=pipe.torch_dtype)
             
+            # Run inpaint pipeline and return full frames directly
             with torch.no_grad():
                 video_frames_pil = pipe(**pipeline_args).frames
-            
-            # 5. Composite the result
-            source_video_np = (source_video.cpu().numpy() * 255.).astype(np.uint8)
-            composited_frames = []
-            for i, gen_frame_pil in enumerate(video_frames_pil):
-                info = crop_info_list[i]
-                if info is None:
-                    composited_frames.append(source_video_np[i])
-                    continue
-
-                gen_frame_np = np.array(gen_frame_pil)
-                x1, y1, w, h = info['x1'], info['y1'], info['w'], info['h']
-                
-                generated_face = gen_frame_np[y1:y1+h, x1:x1+w]
-                original_frame = source_video_np[i].copy()
-                original_frame[y1:y1+h, x1:x1+w] = generated_face
-                composited_frames.append(original_frame)
-
-            output_tensors = [torch.from_numpy(frame).float() / 255.0 for frame in composited_frames]
+            output_tensors = [torch.from_numpy(np.array(frame)).float() / 255.0 for frame in video_frames_pil]
             final_video_tensor = torch.stack(output_tensors)
 
         else:

@@ -694,31 +694,32 @@ class SkyReelsA1InpaintPoseToVideoPipeline(DiffusionPipeline):
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(
-        self,
-        image: PipelineImageInput,
-        image_face: PipelineImageInput,
-        video: Union[torch.FloatTensor] = None,
-        control_video: Union[torch.FloatTensor] = None,
-        mask: Optional[torch.FloatTensor] = None,
-        prompt: Optional[Union[str, List[str]]] = None,
-        negative_prompt: Optional[Union[str, List[str]]] = None,
-        height: int = 480,
-        width: int = 720,
-        num_frames: int = 49,
-        num_inference_steps: int = 50,
-        timesteps: Optional[List[int]] = None,
-        guidance_scale: float = 6,
-        use_dynamic_cfg: bool = False,
-        num_videos_per_prompt: int = 1,
-        eta: float = 0.0,
-        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-        latents: Optional[torch.FloatTensor] = None,
-        prompt_embeds: Optional[torch.FloatTensor] = None,
-        negative_prompt_embeds: Optional[torch.FloatTensor] = None,
-        output_type: str = "pil",
-        return_dict: bool = True,
-        attention_kwargs: Optional[Dict[str, Any]] = None,
-        callback_on_step_end: Optional[
+         self,
+         image: PipelineImageInput,
+         image_face: PipelineImageInput,
+         video: Union[torch.FloatTensor] = None,
+         control_video: Union[torch.FloatTensor] = None,
+         mask: Optional[torch.FloatTensor] = None,
+         prompt: Optional[Union[str, List[str]]] = None,
+         negative_prompt: Optional[Union[str, List[str]]] = None,
+         height: int = 480,
+         width: int = 720,
+         num_frames: int = 49,
+         num_inference_steps: int = 50,
+         timesteps: Optional[List[int]] = None,
+         guidance_scale: float = 6,
+         use_dynamic_cfg: bool = False,
+         strength: float = 1.0,
+         num_videos_per_prompt: int = 1,
+         eta: float = 0.0,
+         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+         latents: Optional[torch.FloatTensor] = None,
+         prompt_embeds: Optional[torch.FloatTensor] = None,
+         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+         output_type: str = "pil",
+         return_dict: bool = True,
+         attention_kwargs: Optional[Dict[str, Any]] = None,
+         callback_on_step_end: Optional[
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
@@ -842,8 +843,10 @@ class SkyReelsA1InpaintPoseToVideoPipeline(DiffusionPipeline):
         image_embeddings = self._encode_image(Image.fromarray(np.array(image_face)), device, num_videos_per_prompt, do_classifier_free_guidance)
         image_embeddings = image_embeddings.type(torch.bfloat16)
 
-        # 4. Prepare timesteps
+        # 4. Prepare timesteps and apply strength
         timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
+        # use strength to skip initial steps (0=no update on masked region, 1=full denoise)
+        timesteps, num_inference_steps = self.get_timesteps(num_inference_steps, timesteps, strength, device)
         self._num_timesteps = len(timesteps)
 
         # 5. Prepare latents
