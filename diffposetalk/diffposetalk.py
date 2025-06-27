@@ -19,9 +19,9 @@ warnings.filterwarnings('ignore', message='PySoundFile failed. Trying audioread 
 
 class DiffPoseTalkConfig(BaseModel):
     no_context_audio_feat: bool = False
-    model_path: str = "pretrained_models/diffposetalk/iter_0110000.pt" # DPT/head-SA-hubert-WM
-    coef_stats: str = "pretrained_models/diffposetalk/stats_train.npz"
-    style_path: str = "pretrained_models/diffposetalk/style/L4H4-T0.1-BS32/iter_0034000/normal.npy"
+    model_path: str = "skyreels/diffposetalk/iter_0110000.pt" # DPT/head-SA-hubert-WM
+    coef_stats: str = "skyreels/diffposetalk/stats_train.npz"
+    style_path: str = "skyreels/diffposetalk/style/L4H4-T0.1-BS32/iter_0034000/normal.npy"
     dynamic_threshold_ratio: float = 0.99
     dynamic_threshold_min: float = 1.0
     dynamic_threshold_max: float = 4.0

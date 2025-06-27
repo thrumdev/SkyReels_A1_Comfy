@@ -19,7 +19,7 @@ from renderer import Renderer
 from moviepy.editor import ImageSequenceClip
 
 class FaceAnimationProcessor:
-    def __init__(self, device='cuda', checkpoint="pretrained_models/smirk/smirk_encoder.pt"):
+    def __init__(self, device='cuda', checkpoint="skyreels/smirk/smirk_encoder.pt"):
         self.device = device
         self.app = FaceAnalysis(allowed_modules=['detection'])
         self.app.prepare(ctx_id=0, det_size=(640, 640))
@@ -319,5 +319,5 @@ if __name__ == "__main__":
     parser.add_argument('--output_path', type=str, default="./output.mp4", help='Path to save the output video.')
     args = parser.parse_args()
 
-    processor = FaceAnimationProcessor(checkpoint='./pretrained_models/smirk/SMIRK_em1.pt')
+    processor = FaceAnimationProcessor(checkpoint='skyreels/smirk/SMIRK_em1.pt')
     processor.process_video(args.source_image, args.driving_video, args.output_path)

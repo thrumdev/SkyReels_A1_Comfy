@@ -27,7 +27,7 @@ def smooth_params(data, alpha=0.7):
     return smoothed_data
 
 class FaceAnimationProcessor:
-    def __init__(self, device='cuda', checkpoint="pretrained_models/smirk/smirk_encoder.pt"):
+    def __init__(self, device='cuda', checkpoint="skyreels/smirk/smirk_encoder.pt"):
         self.device = device
         self.app = FaceAnalysis(allowed_modules=['detection'])
         self.app.prepare(ctx_id=0, det_size=(640, 640))
