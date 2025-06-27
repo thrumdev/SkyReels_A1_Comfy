@@ -16,6 +16,9 @@ from skyreels_a1.src.utils.mediapipe_utils import MediaPipeUtils
 from skyreels_a1.src.smirk_encoder import SmirkEncoder
 from skyreels_a1.src.FLAME.FLAME import FLAME
 from skyreels_a1.src.renderer import Renderer
+import folder_paths
+
+models_directory = os.path.join(folder_paths.models_dir, "skyreels")
 
 def smooth_params(data, alpha=0.7):
     if not data:
@@ -27,7 +30,7 @@ def smooth_params(data, alpha=0.7):
     return smoothed_data
 
 class FaceAnimationProcessor:
-    def __init__(self, device='cuda', checkpoint="skyreels/smirk/smirk_encoder.pt"):
+    def __init__(self, device='cuda', checkpoint=os.path.join(models_directory, "smirk", "smirk_encoder.pt")):
         self.device = device
         self.app = FaceAnalysis(allowed_modules=['detection'])
         self.app.prepare(ctx_id=0, det_size=(640, 640))

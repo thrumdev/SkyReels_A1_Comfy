@@ -11,6 +11,7 @@ from skimage.transform import estimate_transform, warp
 from insightface.app import FaceAnalysis
 from diffusers.utils import load_image
 from utils.mediapipe_utils import MediaPipeUtils
+import folder_paths
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from smirk_encoder import SmirkEncoder
@@ -18,8 +19,10 @@ from FLAME.FLAME import FLAME
 from renderer import Renderer
 from moviepy.editor import ImageSequenceClip
 
+models_directory = os.path.join(folder_paths.models_dir, "skyreels")
+
 class FaceAnimationProcessor:
-    def __init__(self, device='cuda', checkpoint="skyreels/smirk/smirk_encoder.pt"):
+    def __init__(self, device='cuda', checkpoint=os.path.join(models_directory, "smirk", "smirk_encoder.pt")):
         self.device = device
         self.app = FaceAnalysis(allowed_modules=['detection'])
         self.app.prepare(ctx_id=0, det_size=(640, 640))
@@ -319,5 +322,5 @@ if __name__ == "__main__":
     parser.add_argument('--output_path', type=str, default="./output.mp4", help='Path to save the output video.')
     args = parser.parse_args()
 
-    processor = FaceAnimationProcessor(checkpoint='skyreels/smirk/SMIRK_em1.pt')
+    processor = FaceAnimationProcessor(checkpoint=os.path.join(models_directory, "smirk", "SMIRK_em1.pt"))
     processor.process_video(args.source_image, args.driving_video, args.output_path)

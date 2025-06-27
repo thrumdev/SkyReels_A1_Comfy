@@ -11,10 +11,13 @@ import pickle
 #import chumpy as ch
 import cv2
 import sys, os
+import folder_paths
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from skyreels_a1.src.utils.mediapipe_utils import face_vertices, vertex_normals, batch_orth_proj
 from skyreels_a1.src.media_pipe.draw_util import FaceMeshVisualizer
 from mediapipe.framework.formats import landmark_pb2
+
+models_directory = os.path.join(folder_paths.models_dir, "skyreels")
 
 def keep_vertices_and_update_faces(faces, vertices_to_keep):
     """
@@ -70,12 +73,17 @@ def mesh_points_by_barycentric_coordinates(mesh_verts, mesh_faces, lmk_face_idx,
     return dif1
 
 class Renderer(nn.Module):
-    def __init__(self, render_full_head=False, obj_filename='pretrained_models/FLAME/head_template.obj'):
+    def __init__(self, render_full_head=False, obj_filename=None):
         super(Renderer, self).__init__()
         self.image_size = 224
-        self.mediapipe_landmark_embedding = np.load("pretrained_models/smirk/mediapipe_landmark_embedding.npz")
+        self.mediapipe_landmark_embedding = np.load(
+            os.path.join(models_directory, "smirk", "mediapipe_landmark_embedding.npz")
+        )
         self.vis = FaceMeshVisualizer(forehead_edge=False)
         
+        # Determine default FLAME template path
+        if obj_filename is None:
+            obj_filename = os.path.join(models_directory, "FLAME", "head_template.obj")
         verts, faces, aux = load_obj(obj_filename)
         uvcoords = aux.verts_uvs[None, ...]      # (N, V, 2)
         uvfaces = faces.textures_idx[None, ...]   # (N, F, 3)
@@ -87,9 +95,13 @@ class Renderer(nn.Module):
         transparent_color = torch.tensor([0, 0, 0])[None, None, :].float()
         colors = transparent_color.repeat(1, 5023, 1)
 
+        # Load FLAME masks dynamically
         flame_masks = pickle.load(
-            open('pretrained_models/FLAME/FLAME_masks.pkl', 'rb'),
-            encoding='latin1')
+            open(
+                os.path.join(models_directory, "FLAME", "FLAME_masks.pkl"), 'rb'
+            ),
+            encoding='latin1'
+        )
         self.flame_masks = flame_masks
 
         self.register_buffer('faces', faces)

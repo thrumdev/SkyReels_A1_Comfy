@@ -4,6 +4,7 @@ from PIL import Image
 import os
 import cv2
 import folder_paths
+import comfy.model_management as mm
 
 # Import classes from the original SkyReels-A1 codebase
 from .skyreels_a1.pre_process_lmk3d import FaceAnimationProcessor, smooth_params
@@ -20,10 +21,12 @@ from safetensors.torch import load_file
 
 
 script_directory = os.path.dirname(os.path.abspath(__file__))
+models_directory = os.path.join(folder_paths.models_dir, "skyreels")
+smirk_directory = os.path.join(models_directory, "smirk")
 
 # A simple cache for loaded models to avoid reloading
 LOADED_MODELS = {}
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = mm.get_torch_device()
 
 def tensor_to_pil(tensor):
     if tensor.ndim == 4 and tensor.shape[0] == 1:
@@ -65,7 +68,6 @@ class SkyReelsPrepareDrivingImages:
             "required": {
                 "source_image": ("IMAGE",),
                 "driving_image": ("IMAGE",),
-                "smirk_checkpoint": (folder_paths.get_filename_list("skyreels/smirk"), {"default": "smirk_v1.pth", "tooltip": "Select a SMIRK checkpoint for driving coefficients preparation."}),
             }
         }
     
@@ -74,14 +76,16 @@ class SkyReelsPrepareDrivingImages:
     FUNCTION = "prepare"
     CATEGORY = "SkyReels-A1"
 
+    smirk_checkpoint = os.path.join(smirk_directory, "smirk_em1.pth")
+
     def _load_model(self, loader_key, model_class, *args, **kwargs):
         if loader_key not in LOADED_MODELS:
             LOADED_MODELS[loader_key] = model_class(*args, **kwargs)
         return LOADED_MODELS[loader_key]
 
-    def prepare(self, source_image, driving_image, smirk_checkpoint):
+    def prepare(self, source_image, driving_image):
         # Step 1: Initialization
-        smirk_full_path = folder_paths.get_full_path_or_raise("skyreels/smirk", smirk_checkpoint)
+        smirk_full_path = self.smirk_checkpoint
         processor = self._load_model(f"face_animation_processor_{smirk_full_path}", FaceAnimationProcessor, checkpoint=smirk_full_path)
         
         # Step 2: Crop source image
@@ -123,7 +127,6 @@ class SkyReelsSampler:
                 "model": (folder_paths.get_filename_list("diffusion_models"), {"tooltip": "These models are loaded from the 'ComfyUI/models/diffusion_models' -folder",}),
                 "pose_guider": (folder_paths.get_filename_list("skyreels/pose_guider"), {"default": "pose_guider.safetensors"}),
                 "VAE": (folder_paths.get_filename_list("vae"), {"default": "SkyReelsVAE.safetensors"}),
-                "smirk_checkpoint": (folder_paths.get_filename_list("skyreels/smirk"), {"default": "smirk_v1.pth"}),
                 "source_image": ("IMAGE",),
                 "landmark_images": ("IMAGE",),
                 "seed": ("INT", {"default": 42, "min": 0, "max": 0xffffffffffffffff}),
@@ -142,6 +145,8 @@ class SkyReelsSampler:
     RETURN_NAMES = ("IMAGE",)
     FUNCTION = "sample"
     CATEGORY = "SkyReels-A1"
+
+    smirk_checkpoint = os.path.join(smirk_directory, "smirk_em1.pth")
 
     def _load_model(self, loader_key, model_class, *args, **kwargs):
         if loader_key not in LOADED_MODELS:
@@ -174,7 +179,7 @@ class SkyReelsSampler:
         lmk_encoder = AutoencoderKLCogVideoX.from_pretrained(pose_guider_config_path)
         lmk_encoder.load_state_dict(load_file(pose_guider_path))
         
-        siglip_path = os.path.join("skyreels", "siglip-so400m-patch14-384")
+        siglip_path = os.path.join(models_directory, "siglip-so400m-patch14-384")
         siglip = SiglipVisionModel.from_pretrained(siglip_path)
         siglip_normalize = SiglipImageProcessor.from_pretrained(siglip_path)
 
@@ -197,12 +202,12 @@ class SkyReelsSampler:
         LOADED_MODELS[cache_key] = pipe
         return pipe
 
-    def sample(self, model, pose_guider, vae, source_image, landmark_images, smirk_checkpoint, seed, denoise, guidance_scale, num_inference_steps, inpaint_mode, source_video=None, mask=None):
+    def sample(self, model, pose_guider, vae, source_image, landmark_images, seed, denoise, guidance_scale, num_inference_steps, inpaint_mode, source_video=None, mask=None):
         # Load models and helpers
         pipe = self._load_pipeline(model, pose_guider, vae, inpaint_mode)
         face_helper = self._load_model("face_restore_helper", FaceRestoreHelper, upscale_factor=1, face_size=512, crop_ratio=(1, 1), det_model='retinaface_resnet50', save_ext='png', device=DEVICE)
         
-        smirk_full_path = folder_paths.get_full_path_or_raise("skyreels/smirk", smirk_checkpoint)
+        smirk_full_path = self.smirk_checkpoint
         processor = self._load_model(f"face_animation_processor_{smirk_full_path}", FaceAnimationProcessor, checkpoint=smirk_full_path)
         
         generator = torch.Generator(device=DEVICE).manual_seed(seed)

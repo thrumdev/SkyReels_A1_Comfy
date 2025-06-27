@@ -1,4 +1,5 @@
 import math
+import os
 import tempfile
 import warnings
 from pathlib import Path
@@ -14,14 +15,16 @@ from pydantic import BaseModel
 from .diff_talking_head import DiffTalkingHead
 from .utils import NullableArgs, coef_dict_to_vertices, get_coef_dict
 from .utils.media import combine_video_and_audio, convert_video, reencode_audio
+import folder_paths
 
 warnings.filterwarnings('ignore', message='PySoundFile failed. Trying audioread instead.')
+models_directory = os.path.join(folder_paths.models_dir, "skyreels")
 
 class DiffPoseTalkConfig(BaseModel):
     no_context_audio_feat: bool = False
-    model_path: str = "skyreels/diffposetalk/iter_0110000.pt" # DPT/head-SA-hubert-WM
-    coef_stats: str = "skyreels/diffposetalk/stats_train.npz"
-    style_path: str = "skyreels/diffposetalk/style/L4H4-T0.1-BS32/iter_0034000/normal.npy"
+    model_path: str = os.path.join(models_directory, "diffposetalk", "iter_0110000.pt")  # DPT/head-SA-hubert-WM
+    coef_stats: str = os.path.join(models_directory, "diffposetalk", "stats_train.npz")
+    style_path: str = os.path.join(models_directory, "diffposetalk", "style", "L4H4-T0.1-BS32", "iter_0034000", "normal.npy")
     dynamic_threshold_ratio: float = 0.99
     dynamic_threshold_min: float = 1.0
     dynamic_threshold_max: float = 4.0
