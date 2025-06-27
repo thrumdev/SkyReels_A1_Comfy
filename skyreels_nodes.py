@@ -83,9 +83,9 @@ class SkyReelsPrepareDrivingImages:
             LOADED_MODELS[loader_key] = model_class(*args, **kwargs)
         return LOADED_MODELS[loader_key]
 
-    def prepare(self, source_image, driving_image):
+    def prepare(self, source_image, driving_image, smirk_checkpoint):
         # Step 1: Initialization
-        smirk_full_path = self.smirk_checkpoint
+        smirk_full_path = folder_paths.get_full_path_or_raise(smirk_checkpoint)
         processor = self._load_model(f"face_animation_processor_{smirk_full_path}", FaceAnimationProcessor, checkpoint=smirk_full_path)
         
         # Step 2: Crop source image
@@ -125,7 +125,6 @@ class SkyReelsSampler:
         return {
             "required": {
                 "model": (folder_paths.get_filename_list("diffusion_models"), {"tooltip": "These models are loaded from the 'ComfyUI/models/diffusion_models' -folder",}),
-                "pose_guider": (folder_paths.get_filename_list("skyreels/pose_guider"), {"default": "pose_guider.safetensors"}),
                 "VAE": (folder_paths.get_filename_list("vae"), {"default": "SkyReelsVAE.safetensors"}),
                 "source_image": ("IMAGE",),
                 "landmark_images": ("IMAGE",),
@@ -168,7 +167,7 @@ class SkyReelsSampler:
 
         vae_path = folder_paths.get_full_path_or_raise("vae", VAE)
         transformer_path = folder_paths.get_full_path_or_raise("diffusion_models", model)
-        pose_guider_path = folder_paths.get_full_path_or_raise("skyreels/pose_guider", pose_guider)
+        pose_guider_path = folder_paths.get_full_path_or_raise(models_directory, 'pose_guider', 'diffusion_pytorch_model.safetensors')
         
         transformer = CogVideoXTransformer3DModel.from_pretrained(transformer_config_path)
         transformer.load_state_dict(load_file(transformer_path))
@@ -202,12 +201,12 @@ class SkyReelsSampler:
         LOADED_MODELS[cache_key] = pipe
         return pipe
 
-    def sample(self, model, pose_guider, vae, source_image, landmark_images, seed, denoise, guidance_scale, num_inference_steps, inpaint_mode, source_video=None, mask=None):
+    def sample(self, model, pose_guider, vae, source_image, landmark_images, smirk_checkpoint, seed, denoise, guidance_scale, num_inference_steps, inpaint_mode, source_video=None, mask=None):
         # Load models and helpers
         pipe = self._load_pipeline(model, pose_guider, vae, inpaint_mode)
         face_helper = self._load_model("face_restore_helper", FaceRestoreHelper, upscale_factor=1, face_size=512, crop_ratio=(1, 1), det_model='retinaface_resnet50', save_ext='png', device=DEVICE)
         
-        smirk_full_path = self.smirk_checkpoint
+        smirk_full_path = folder_paths.get_full_path_or_raise(smirk_checkpoint)
         processor = self._load_model(f"face_animation_processor_{smirk_full_path}", FaceAnimationProcessor, checkpoint=smirk_full_path)
         
         generator = torch.Generator(device=DEVICE).manual_seed(seed)
