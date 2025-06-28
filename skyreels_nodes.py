@@ -10,13 +10,14 @@ import comfy.model_management as mm
 from .skyreels_a1.pre_process_lmk3d import FaceAnimationProcessor, smooth_params
 from .skyreels_a1.src.media_pipe.mp_utils import LMKExtractor
 from .skyreels_a1.src.media_pipe.draw_util_2d import FaceMeshVisualizer2d
-from facexlib.utils.face_restoration_helper import FaceRestoreHelper
 from .skyreels_a1.skyreels_a1_i2v_pipeline import SkyReelsA1ImagePoseToVideoPipeline
 from .skyreels_a1.skyreels_a1_i2v_inpaint_pipeline import SkyReelsA1InpaintPoseToVideoPipeline
 from .skyreels_a1.models.transformer3d import CogVideoXTransformer3DModel
+from .skyreels_a1.ddim_solver import DDIMSolver
+
+from facexlib.utils.face_restoration_helper import FaceRestoreHelper
 from diffusers.models import AutoencoderKLCogVideoX
 from transformers import SiglipVisionModel, SiglipImageProcessor
-from .skyreels_a1.ddim_solver import DDIMSolver
 from safetensors.torch import load_file
 
 
@@ -78,44 +79,80 @@ class SkyReelsPrepareDrivingImages:
 
     smirk_checkpoint = os.path.join(smirk_directory, "SMIRK_em1.pt")
 
-    def _load_model(self, loader_key, model_class, *args, **kwargs):
-        if loader_key not in LOADED_MODELS:
-            LOADED_MODELS[loader_key] = model_class(*args, **kwargs)
-        return LOADED_MODELS[loader_key]
-
     def prepare(self, source_image, driving_image):
-        # Step 1: Initialization
         smirk_full_path = self.smirk_checkpoint
-        processor = self._load_model(f"face_animation_processor_{smirk_full_path}", FaceAnimationProcessor, checkpoint=smirk_full_path)
-        
-        # Step 2: Crop source image
-        source_image_np = (source_image[0].cpu().numpy() * 255.).astype(np.uint8)
-        source_image_cropped_np, _, _ = processor.face_crop(source_image_np)
-        face_h, face_w, _ = source_image_cropped_np.shape
+        processor = FaceAnimationProcessor(checkpoint=smirk_full_path)
+        lmk_extractor = LMKExtractor()
+        vis = FaceMeshVisualizer2d(forehead_edge=False, draw_head=False, draw_iris=False,)
 
-        # Step 3: Generate the first motion frame from the source image's own landmarks
-        source_3d_lmk, _, _, source_trans = processor.get_identity_from_source(source_image_cropped_np)
-        first_motion_cropped = processor.render_3d_to_2d(source_3d_lmk, source_trans, face_size=(face_w, face_h))
-
-        # Step 4: Crop driving images
+        # Convert source_image and driving_image to numpy arrays
+        source_images_np = (source_image.cpu().numpy() * 255.).astype(np.uint8)
+        if source_images_np.ndim == 3:
+            source_images_np = source_images_np[np.newaxis, ...]  # [F, H, W, C]
         driving_frames_np = (driving_image.cpu().numpy() * 255.).astype(np.uint8)
-        driving_video_crop = []
-        for frame in driving_frames_np:
-            cropped_frame, _, _ = processor.face_crop(frame)
-            driving_video_crop.append(cropped_frame)
+        if driving_frames_np.ndim == 3:
+            driving_frames_np = driving_frames_np[np.newaxis, ...]  # [D, H, W, C]
 
-        # Step 5: Call the main preprocessing function for the driving frames
-        driving_landmarks_list = processor.preprocess_lmk3d(
-            source_image=source_image_cropped_np, 
-            driving_image_list=driving_video_crop
-        )
+        all_landmark_frames = []
+        # Single-frame source: classic behavior
+        if source_images_np.shape[0] == 1:
+            frame = source_images_np[0]
+            ref_image, x1, y1 = processor.face_crop(frame)
+            face_h, face_w, _ = ref_image.shape
+            # First motion: neutral pose
+            ref_image_resized = cv2.resize(ref_image, (512, 512))
+            ref_lmk = lmk_extractor(ref_image_resized[:, :, ::-1])
+            ref_img = vis.draw_landmarks_v3((512, 512), (face_w, face_h), ref_lmk['lmks'].astype(np.float32), normed=True)
+            first_motion = np.zeros_like(frame)
+            first_motion[y1:y1+face_h, x1:x1+face_w] = ref_img
+            all_landmark_frames.append(first_motion)
 
-        # Step 6: Combine first motion and driving landmarks
-        all_landmark_frames = [first_motion_cropped] + driving_landmarks_list
-        
-        # Step 7: Convert to tensor and return
+            # Prepare driving video crops
+            driving_video_crop = []
+            for dframe in driving_frames_np:
+                cropped_frame, _, _ = processor.face_crop(dframe)
+                driving_video_crop.append(cropped_frame)
+
+            # Generate animated landmark frames
+            driving_landmarks_list = processor.preprocess_lmk3d(
+                source_image=ref_image,
+                driving_image_list=driving_video_crop
+            )
+            for landmark in driving_landmarks_list:
+                resized_landmark = cv2.resize(landmark, (face_w, face_h))
+                canvas = np.zeros_like(frame)
+                canvas[y1:y1+face_h, x1:x1+face_w] = resized_landmark
+                all_landmark_frames.append(canvas)
+        else:
+            # Multi-frame: pair each source frame with corresponding driving frame
+            num_frames = min(source_images_np.shape[0], driving_frames_np.shape[0])
+            for idx in range(num_frames):
+                frame = source_images_np[idx]
+                dframe = driving_frames_np[idx]
+                ref_image, x1, y1 = processor.face_crop(frame)
+                face_h, face_w, _ = ref_image.shape
+                # First motion: neutral pose for this frame
+                ref_image_resized = cv2.resize(ref_image, (512, 512))
+                ref_lmk = lmk_extractor(ref_image_resized[:, :, ::-1])
+                ref_img = vis.draw_landmarks_v3((512, 512), (face_w, face_h), ref_lmk['lmks'].astype(np.float32), normed=True)
+                first_motion = np.zeros_like(frame)
+                first_motion[y1:y1+face_h, x1:x1+face_w] = ref_img
+                all_landmark_frames.append(first_motion)
+
+                # Driving frame crop
+                cropped_driving, _, _ = processor.face_crop(dframe)
+                # Generate landmark for this pair
+                driving_landmarks_list = processor.preprocess_lmk3d(
+                    source_image=ref_image,
+                    driving_image_list=[cropped_driving]
+                )
+                for landmark in driving_landmarks_list:
+                    resized_landmark = cv2.resize(landmark, (face_w, face_h))
+                    canvas = np.zeros_like(frame)
+                    canvas[y1:y1+face_h, x1:x1+face_w] = resized_landmark
+                    all_landmark_frames.append(canvas)
+
         final_rendered_landmarks = torch.from_numpy(np.array(all_landmark_frames)).float() / 255.0
-        
         return (final_rendered_landmarks,)
 
 
@@ -246,7 +283,9 @@ class SkyReelsSampler:
             _, x1, y1 = processor.face_crop(source_image_np)
             face_h, face_w = landmark_images_np.shape[1:3]
             for i, landmark_frame in enumerate(landmark_images_np):
-                final_input_video_np[i, y1:y1+face_h, x1:x1+face_w] = landmark_frame
+                # Ensure the landmark frame is resized to the source face crop size
+                resized_landmark = cv2.resize(landmark_frame, (face_w, face_h))
+                final_input_video_np[i, y1:y1+face_h, x1:x1+face_w] = resized_landmark
         
         # 2. Create final input video tensor
         input_video = torch.from_numpy(final_input_video_np).permute(0, 3, 1, 2)
