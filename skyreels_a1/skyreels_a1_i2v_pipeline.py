@@ -35,6 +35,8 @@ from diffusers.utils import (
     logging,
     replace_example_docstring,
 )
+
+import os
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.video_processor import VideoProcessor
 from .pipeline_output import CogVideoXPipelineOutput
