@@ -53,7 +53,7 @@ import numpy as np
 from PIL import Image
 
 
-
+models_directory = os.path.join(folder_paths.models_dir, "skyreels")
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 

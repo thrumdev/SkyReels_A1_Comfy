@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 import os
 import folder_paths
+import torch
 
 models_directory = os.path.join(folder_paths.models_dir, "skyreels")
 
@@ -100,7 +101,7 @@ class MP_2_FLAME():
         return exp, pose, eye_pose
 
 class MediaPipeUtils:
-    def __init__(self, model_asset_path=os.path.join(models_directory, "mediapipe", "face_landmarker.task"), mappings_path=os.path.join(models_directory, "mediapipe")):
+    def __init__(self, model_asset_path='skyreels/mediapipe/face_landmarker.task', mappings_path='skyreels/mediapipe/'):
         base_options = python.BaseOptions(model_asset_path=model_asset_path)
         options = vision.FaceLandmarkerOptions(base_options=base_options,
                                                output_face_blendshapes=True,

@@ -76,7 +76,7 @@ class SkyReelsPrepareDrivingImages:
     FUNCTION = "prepare"
     CATEGORY = "SkyReels-A1"
 
-    smirk_checkpoint = os.path.join(smirk_directory, "smirk_em1.pth")
+    smirk_checkpoint = os.path.join(smirk_directory, "SMIRK_em1.pt")
 
     def _load_model(self, loader_key, model_class, *args, **kwargs):
         if loader_key not in LOADED_MODELS:
@@ -145,7 +145,7 @@ class SkyReelsSampler:
     FUNCTION = "sample"
     CATEGORY = "SkyReels-A1"
 
-    smirk_checkpoint = os.path.join(smirk_directory, "smirk_em1.pth")
+    smirk_checkpoint = os.path.join(smirk_directory, "SMIRK_em1.pt")
 
     def _load_model(self, loader_key, model_class, *args, **kwargs):
         if loader_key not in LOADED_MODELS:
@@ -167,7 +167,7 @@ class SkyReelsSampler:
 
         vae_path = folder_paths.get_full_path_or_raise("vae", VAE)
         transformer_path = folder_paths.get_full_path_or_raise("diffusion_models", model)
-        pose_guider_path = os.paths.join(models_directory, 'skyreels/pose_guider', 'diffusion_pytorch_model.safetensors')
+        pose_guider_path = os.path.join(models_directory, 'skyreels/pose_guider', 'diffusion_pytorch_model.safetensors')
         
         transformer = CogVideoXTransformer3DModel.from_pretrained(transformer_config_path)
         transformer.load_state_dict(load_file(transformer_path))
