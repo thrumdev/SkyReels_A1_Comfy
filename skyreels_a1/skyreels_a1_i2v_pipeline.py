@@ -53,6 +53,7 @@ import insightface
 import cv2
 import numpy as np
 from PIL import Image
+import folder_paths
 
 
 models_directory = os.path.join(folder_paths.models_dir, "skyreels")
