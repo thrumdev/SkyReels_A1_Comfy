@@ -125,7 +125,6 @@ class SkyReelsSampler:
         return {
             "required": {
                 "model": (folder_paths.get_filename_list("diffusion_models"), {"tooltip": "These models are loaded from the 'ComfyUI/models/diffusion_models' -folder",}),
-                "pose_guider": (folder_paths.get_filename_list("skyreels/pose_guider"), {"default": "pose_guider.safetensors"}),
                 "VAE": (folder_paths.get_filename_list("vae"), {"default": "SkyReelsVAE.safetensors"}),
                 "source_image": ("IMAGE",),
                 "landmark_images": ("IMAGE",),
@@ -168,7 +167,7 @@ class SkyReelsSampler:
 
         vae_path = folder_paths.get_full_path_or_raise("vae", VAE)
         transformer_path = folder_paths.get_full_path_or_raise("diffusion_models", model)
-        pose_guider_path = folder_paths.get_full_path_or_raise(models_directory, 'pose_guider', 'diffusion_pytorch_model.safetensors')
+        pose_guider_path = os.paths.join(models_directory, 'skyreels/pose_guider', 'diffusion_pytorch_model.safetensors')
         
         transformer = CogVideoXTransformer3DModel.from_pretrained(transformer_config_path)
         transformer.load_state_dict(load_file(transformer_path))

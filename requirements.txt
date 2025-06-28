@@ -1,5 +1,6 @@
 decord>=0.6.0
 diffusers>=0.32.2
+chumpy==0.70
 einops>=0.8.1
 facexlib>=0.3.0
 insightface>=0.7.3
