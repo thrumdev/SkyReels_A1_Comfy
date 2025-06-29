@@ -330,7 +330,7 @@ class SkyReelsSampler:
             "num_frames": num_frames,
             "height": height,
             "width": width,
-            "output_type": "pil",
+            "output_type": "pt",
         }
 
         if inpaint_mode:
@@ -354,11 +354,19 @@ class SkyReelsSampler:
             final_video_tensor = torch.stack(output_tensors)
         else:
             with torch.no_grad():
-                video_frames_pil = pipe(**pipeline_args).frames
-            output_tensors = [torch.from_numpy(np.array(frame)).float() / 255.0 for frame in video_frames_pil]
-            final_video_tensor = torch.stack(output_tensors)
+            # The pipeline now returns a tensor with shape (B, F, C, H, W)
+                video_tensor = pipe(**pipeline_args).frames
 
-        return (final_video_tensor,)
+                # ComfyUI's video nodes expect a tensor of shape (F, H, W, C).
+                # We need to convert from (1, F, C, H, W) to (F, H, W, C).
+        
+        # Squeeze the batch dimension (from 1 to none) -> (F, C, H, W)
+        video_tensor_squeezed = video_tensor.squeeze(0)
+        
+        # Permute the dimensions to match the expected format -> (F, H, W, C)
+        final_video_tensor = video_tensor_squeezed.permute(0, 2, 3, 1)
+
+        return (final_video_tensor.float(),)
 
 
 
