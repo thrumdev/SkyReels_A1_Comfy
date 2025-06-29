@@ -101,7 +101,7 @@ class MP_2_FLAME():
         return exp, pose, eye_pose
 
 class MediaPipeUtils:
-    def __init__(self, model_asset_path='skyreels/mediapipe/face_landmarker.task', mappings_path='skyreels/mediapipe/'):
+    def __init__(self, model_asset_path=os.path.join(models_directory, "mediapipe", "face_landmarker.task"), mappings_path=os.path.join(models_directory,'mediapipe/')):
         base_options = python.BaseOptions(model_asset_path=model_asset_path)
         options = vision.FaceLandmarkerOptions(base_options=base_options,
                                                output_face_blendshapes=True,
