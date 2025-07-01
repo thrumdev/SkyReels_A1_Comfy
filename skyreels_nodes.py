@@ -274,12 +274,12 @@ class SkyReelsSampler:
             source_image_np = source_image_np[0]  # Remove batch dim if present
         elif source_image_np.ndim == 3:
             source_image_np = source_image_np  # Already (H, W, C)
-        landmark_images_np = (landmark_images.cpu().numpy() * 255.).astype(np.uint8)
+        landmark_images_np = landmark_images.cpu().numpy()
         num_frames = len(landmark_images_np)
         height, width = source_image_np.shape[:2]
 
         # 1. Prepare motion input for pipeline (paste all landmark frames onto full canvas)
-        final_input_video_np = np.zeros((num_frames,) + source_image_np.shape, dtype=np.uint8)
+        final_input_video_np = np.zeros((num_frames,) + source_image_np.shape, dtype=np.float32)
         crop_info_list = []
 
         if inpaint_mode:
