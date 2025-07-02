@@ -307,7 +307,6 @@ class SkyReelsSampler:
         # 2. Create final input video tensor
         input_video = torch.from_numpy(final_input_video_np).permute(0, 3, 1, 2)
         input_video = input_video.unsqueeze(0).permute(0, 2, 1, 3, 4)
-        input_video = input_video / 255.0
         final_input_video = input_video.to(device=DEVICE, dtype=torch.bfloat16)
 
         # 3. Prepare aligned face for pipeline (using numpy)
