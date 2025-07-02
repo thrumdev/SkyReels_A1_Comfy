@@ -274,12 +274,15 @@ class SkyReelsSampler:
             source_image_np = source_image_np[0]  # Remove batch dim if present
         elif source_image_np.ndim == 3:
             source_image_np = source_image_np  # Already (H, W, C)
-        landmark_images_np = landmark_images.cpu().numpy()
+        
+        # Convert incoming float (0-1) landmarks to uint8 (0-255) for processing
+        landmark_images_np = (landmark_images.cpu().numpy() * 255).astype(np.uint8)
         num_frames = len(landmark_images_np)
         height, width = source_image_np.shape[:2]
 
         # 1. Prepare motion input for pipeline (paste all landmark frames onto full canvas)
-        final_input_video_np = np.zeros((num_frames,) + source_image_np.shape, dtype=np.float32)
+        #    This canvas MUST be uint8 to match inference.py's processing pipeline.
+        final_input_video_np = np.zeros((num_frames,) + source_image_np.shape, dtype=np.uint8)
         crop_info_list = []
 
         if inpaint_mode:
@@ -298,6 +301,7 @@ class SkyReelsSampler:
                     print(f"Warning: No face detected in source_video frame {i}. Control frame will be black.")
                     crop_info_list.append(None)
         else:
+            # All manipulation now happens on uint8 arrays, matching inference.py
             for i, landmark_frame in enumerate(landmark_images_np):
                 ref_image, x1, y1 = processor.face_crop(source_image_np)
                 face_h, face_w, _ = ref_image.shape
@@ -305,7 +309,9 @@ class SkyReelsSampler:
                 final_input_video_np[i, y1:y1+face_h, x1:x1+face_w] = resized_landmark
 
         # 2. Create final input video tensor
-        input_video = torch.from_numpy(final_input_video_np).permute(0, 3, 1, 2)
+        #    NOW, at the very end, convert the uint8 array to a float tensor and normalize.
+        input_video = torch.from_numpy(final_input_video_np).float() / 255.0
+        input_video = input_video.permute(0, 3, 1, 2)
         input_video = input_video.unsqueeze(0).permute(0, 2, 1, 3, 4)
         final_input_video = input_video.to(device=DEVICE, dtype=torch.bfloat16)
 
