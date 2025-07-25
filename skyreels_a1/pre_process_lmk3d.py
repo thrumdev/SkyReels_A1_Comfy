@@ -230,6 +230,9 @@ class FaceAnimationProcessor:
         _, driving_outputs_A, _, weights_473_A, weights_468_A = driving_data_A
         _, driving_outputs_B, _, weights_473_B, weights_468_B = driving_data_B
 
+        blended_driving_frames = []
+        blended_driving_tforms = []
+
         blended_driving_outputs = []
         blended_weights_473 = []
         blended_weights_468 = []
@@ -281,7 +284,7 @@ class FaceAnimationProcessor:
 
 
         # 5. Repackage and return the new set of outputs
-        return (blended_driving_outputs, blended_weights_473, blended_weights_468)
+        return (blended_driving_frames, blended_driving_outputs, blended_driving_tforms, blended_weights_473, blended_weights_468)
 
     def preprocess_lmk3d(self, source_image=None, driving_image_list=None):
         source_outputs, source_tform, image_original = self.process_source_image(source_image)
