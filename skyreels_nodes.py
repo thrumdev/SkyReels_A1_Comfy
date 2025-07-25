@@ -3,15 +3,17 @@ import numpy as np
 from PIL import Image
 import os
 import cv2
+import node_helpers
 import folder_paths
 import comfy.model_management as mm
+import comfy
 
 # Import classes from the original SkyReels-A1 codebase
 from .skyreels_a1.pre_process_lmk3d import FaceAnimationProcessor, smooth_params
 from .skyreels_a1.src.media_pipe.mp_utils import LMKExtractor
 from .skyreels_a1.src.media_pipe.draw_util_2d import FaceMeshVisualizer2d
 from .skyreels_a1.skyreels_a1_i2v_pipeline import SkyReelsA1ImagePoseToVideoPipeline
-from .skyreels_a1.skyreels_a1_i2v_inpaint_pipeline import SkyReelsA1InpaintPoseToVideoPipeline
+from .skyreels_a1.skyreels_a1_v2v_inpaint_pipeline import SkyReelsA1V2VInpaintPipeline
 from .skyreels_a1.models.transformer3d import CogVideoXTransformer3DModel
 from .skyreels_a1.ddim_solver import DDIMSolver
 
@@ -19,6 +21,8 @@ from facexlib.utils.face_restoration_helper import FaceRestoreHelper
 from diffusers.models import AutoencoderKLCogVideoX
 from transformers import SiglipVisionModel, SiglipImageProcessor
 from safetensors.torch import load_file
+
+from einops import rearrange
 
 
 script_directory = os.path.dirname(os.path.abspath(__file__))
@@ -424,23 +428,240 @@ class SkyreelsPrepareDrivingImagesFromData:
         final_landmarks_tensor = torch.from_numpy(np.array(all_landmark_frames)).float() / 255.0
         
         return (final_landmarks_tensor,)
+    
+V2V_CONFIG = {
+  "activation_fn": "gelu-approximate",
+  "attention_bias": True,
+  "attention_head_dim": 64,
+  "dropout": 0.0,
+  "flip_sin_to_cos": True,
+  "freq_shift": 0,
+  "in_channels": 112,
+  "max_text_seq_length": 226,
+  "norm_elementwise_affine": True,
+  "norm_eps": 1e-05,
+  "num_attention_heads": 48,
+  "num_layers": 42,
+  "out_channels": 16,
+  "patch_size": 2,
+  "sample_frames": 49,
+  "sample_height": 60,
+  "sample_width": 90,
+  "spatial_interpolation_scale": 1.875,
+  "temporal_compression_ratio": 4,
+  "temporal_interpolation_scale": 1.0,
+  "text_embed_dim": 4096,
+  "time_embed_dim": 512,
+  "timestep_activation_fn": "silu",
+  "use_learned_positional_embeddings": True,
+  "use_rotary_positional_embeddings": True
+}
 
+VAE_CONFIG = {
+  "act_fn": "silu",
+  "block_out_channels": [
+    128,
+    256,
+    256,
+    512
+  ],
+  "down_block_types": [
+    "CogVideoXDownBlock3D",
+    "CogVideoXDownBlock3D",
+    "CogVideoXDownBlock3D",
+    "CogVideoXDownBlock3D"
+  ],
+  "force_upcast": True,
+  "in_channels": 3,
+  "latent_channels": 16,
+  "latents_mean": None,
+  "latents_std": None,
+  "layers_per_block": 3,
+  "norm_eps": 1e-06,
+  "norm_num_groups": 32,
+  "out_channels": 3,
+  "sample_height": 480,
+  "sample_width": 720,
+  "scaling_factor": 0.7,
+  "shift_factor": None,
+  "temporal_compression_ratio": 4,
+  "up_block_types": [
+    "CogVideoXUpBlock3D",
+    "CogVideoXUpBlock3D",
+    "CogVideoXUpBlock3D",
+    "CogVideoXUpBlock3D"
+  ],
+  "use_post_quant_conv": False,
+  "use_quant_conv": False
+}
+    
+class SkyReelsV2VModelLoader:
+    @classmethod
+    def INPUT_TYPES(_):
+        return {
+            "required": {
+                "model_path": (folder_paths.get_filename_list("diffusion_models"))
+            }
+        }
+    
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
 
+    FUNCTION = "loadmodel"
+    CATEGORY = "SkyReels-A1"
+
+    def loadmodel(self, model_path):
+        model = CogVideoXTransformer3DModel(**V2V_CONFIG)
+        model_path = folder_paths.get_full_path_or_raise("diffusion_models", model_path)
+        state_dict = comfy.utils.load_torch_file(model_path, safe_load=True)
+
+        model.load_state_dict(state_dict, strict=True)
+        model.eval().cuda()
+
+        # TODO: create a class with a custom forward method and wrap in model patcher.
+
+        return (model,)
+    
+class SkyReelsVAE:
+    def __init__(self, sd):
+        self.vae = AutoencoderKLCogVideoX(**VAE_CONFIG)
+        self.vae.load_state_dict(sd, strict=True)
+        self.vae.eval().cuda()
+
+class SkyReelsVAELoader:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { "vae_name": (folder_paths.get_filename_list("vae"), )}}
+    RETURN_TYPES = ("VAE",)
+    FUNCTION = "load_vae"
+
+    CATEGORY = "SkyReels-A1"
+    DESCRIPTION = "Load a SkyReels VAE model."
+
+    def load_vae(self, vae_name):
+                # load uno lora safetensors
+        vae_path = folder_paths.get_full_path_or_raise("vae", vae_name)
+        sd = comfy.utils.load_torch_file(vae_path, safe_load=True)
+
+        return (SkyReelsVAE(sd),)
+    
+class SkyReelsVAEEncode:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "vae": ("VAE",),
+                "video": ("IMAGE",),
+            }
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    RETURN_NAMES = ("latent",)
+    FUNCTION = "encode"
+    CATEGORY = "SkyReels-A1"
+
+    def encode(self, vae, video):
+        # Normalize to tensor.
+        if isinstance(video, list):
+            video = torch.stack(video)
+        elif video.ndim == 3:
+            video = video.unsqueeze(0)
+
+        video = video.float()
+
+        if video.max() > 1.0:
+            video = video / 255.0
+
+        if video.min() >= 0.0:
+            video = video * 2.0 - 1.0
+
+        video = rearrange(video, "b f h w c -> b c f h w")
+
+        device = mm.get_torch_device()
+        video = video.to(device=device, dtype=torch.bfloat16)
+        vae.vae.to(device=device, dtype=torch.bfloat16)
+
+        latent = vae.vae.encode(video).latent_dist.sample() * VAE_CONFIG["scaling_factor"]
+        return (latent,)
+    
+class SkyReelsVAEDecode:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "vae": ("VAE",),
+                "latent": ("LATENT",),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "decode"
+    CATEGORY = "SkyReels-A1"
+
+    def decode(self, vae, latent):
+        device = mm.get_torch_device()
+        video = latent.to(device=device, dtype=torch.bfloat16)
+        vae.vae.to(device=device, dtype=torch.bfloat16)
+
+        latent = latent * (1 / VAE_CONFIG["scaling_factor"])
+        video = vae.vae.decode(latent).latent_dist.sample()
+        video = video * 0.5 + 0.5  # Scale to [0, 1]
+
+        video = rearrange(video, "b c f h w -> b f h w c")
+        # convert batch dimension to list.
+        video = [b_video.float() for b_video in video]
+        return (video,)
+    
+class SkyReelsLoadSiglipModel:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "siglip_model_path": (folder_paths.get_filename_list("TODO"),),
+            }
+        }
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("siglip_model",)
+    FUNCTION = "load_siglip"
+    CATEGORY = "SkyReels-A1"
+
+    def load_siglip(self, siglip_model_path):
+        siglip_full_path = folder_paths.get_full_path_or_raise("siglip_models", siglip_model_path)
+        siglip_model = SiglipVisionModel.from_pretrained(siglip_full_path)
+        return (siglip_model,)
+    
+class SkyReelsFaceEmbedder:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "siglip_model": ("MODEL",),
+                "input_face": ("IMAGE",),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("siglip_face",)
+    FUNCTION = "embed"
+    CATEGORY = "SkyReels-A1"
+
+    def embed(self, siglip_model, input_face):
+        pass
+
+PIPELINE = None    
+    
 class SkyReelsSampler:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "source_image": ("IMAGE",),
-                "landmark_images": ("IMAGE",),
+                "ref_frames": ("IMAGE",),
+                "landmark_frames": ("IMAGE",),
                 "seed": ("INT", {"default": 42, "min": 0, "max": 0xffffffffffffffff}),
                 "guidance_scale": ("FLOAT", {"default": 3.0, "min": 0.0, "max": 10.0, "step": 0.1}),
                 "num_inference_steps": ("INT", {"default": 10, "min": 1, "max": 100}),
-                "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Leave on 1.0 unless in inpainting mode"}),
-                "inpaint_mode": ("BOOLEAN", {"default": False, "tooltip": "Enable inpainting mode to use the mask input."}),
-            },
-            "optional": {
-                "source_video": ("IMAGE",),
                 "mask": ("MASK",)
             },
         }
@@ -458,133 +679,90 @@ class SkyReelsSampler:
             LOADED_MODELS[loader_key] = model_instance
         return LOADED_MODELS[loader_key]
 
-    def _load_pipeline(self, inpaint_mode):
+    def _load_pipeline(self):
+        global PIPELINE
+        if PIPELINE is not None:
+            return PIPELINE
         
         weight_dtype = torch.bfloat16
 
-        transformer = CogVideoXTransformer3DModel.from_pretrained(
-            models_directory, 
-            subfolder="transformer"
-        ).to(weight_dtype)
+        device = mm.get_torch_device()
+        offload_device = mm.get_offload_device()
 
-        vae = AutoencoderKLCogVideoX.from_pretrained(
-            models_directory, 
-            subfolder="vae"
-        ).to(weight_dtype)
-
-        lmk_encoder = AutoencoderKLCogVideoX.from_pretrained(
-            models_directory, 
-            subfolder="pose_guider"
-        ).to(weight_dtype)
-        
         siglip_path = os.path.join(models_directory, "siglip-so400m-patch14-384")
-        siglip = SiglipVisionModel.from_pretrained(siglip_path)
-        siglip_normalize = SiglipImageProcessor.from_pretrained(siglip_path)
-
-        cache_key = (transformer, lmk_encoder, vae, inpaint_mode)
-        if cache_key in LOADED_MODELS:
-            return LOADED_MODELS[cache_key]
-
-        pipeline_class = SkyReelsA1InpaintPoseToVideoPipeline if inpaint_mode else SkyReelsA1ImagePoseToVideoPipeline
-        pipe = pipeline_class.from_pretrained(
-            models_directory,
-            transformer=transformer,
-            vae=vae,
-            lmk_encoder=lmk_encoder,
-            image_encoder=siglip,
-            feature_extractor=siglip_normalize,
-            torch_dtype=weight_dtype
+        pipeline = SkyReelsA1V2VInpaintPipeline(
+            models_directory, 
+            siglip_path, 
+            device, 
+            offload_device, 
+            weight_dtype,
         )
 
-        pipe.to(DEVICE)
-        pipe.enable_model_cpu_offload()
-        pipe.vae.enable_tiling()
-        LOADED_MODELS[cache_key] = pipe
-        return pipe
+        PIPELINE = pipeline
+        return pipeline
 
-    def sample(self, source_image, landmark_images, seed, denoise, guidance_scale, num_inference_steps, inpaint_mode, source_video=None, mask=None):
+    def sample(
+            self, 
+            ref_frames, # [F, H, W, C]
+            landmark_frames, # [F, H, W, C]
+            seed, 
+            guidance_scale, 
+            num_inference_steps,
+            mask, # [F, H, W]
+        ):
         # Load models and helpers
-        pipe = self._load_pipeline(inpaint_mode)
+        pipe = self._load_pipeline()
         face_helper = self._load_model("face_restore_helper", FaceRestoreHelper, upscale_factor=1, face_size=512, crop_ratio=(1, 1), det_model='retinaface_resnet50', save_ext='png', device=DEVICE)
-        smirk_full_path = self.smirk_checkpoint
-        processor = self._load_model(f"face_animation_processor_{smirk_full_path}", FaceAnimationProcessor, checkpoint=smirk_full_path)
         generator = torch.Generator(device=DEVICE).manual_seed(seed)
 
-        # Convert source_image to numpy for face_helper
-        source_image_np = (source_image.cpu().numpy() * 255.).astype(np.uint8)
-        if source_image_np.ndim == 4 and source_image_np.shape[0] == 1:
-            source_image_np = source_image_np[0]
+        # Convert ref_frames to numpy for face_helper
+        ref_frames_np = (ref_frames.cpu().numpy() * 255.).astype(np.uint8)
+        if ref_frames_np.ndim == 4 and ref_frames_np.shape[0] == 1:
+            ref_frames_np = ref_frames_np[0]
 
-        # The landmark_images tensor is the complete, final control video.
-        # We just need to get its shape and format it for the pipeline.
-        num_frames, height, width, _ = landmark_images.shape
-
-        # 1. Prepare the control_video tensor for the pipeline
+        # 1. Reshape ref frames and landmark frames.
         # Current shape: [F, H, W, C]
-        # Target shape: [B, C, F, H, W] (where B=1)
-        control_video = landmark_images.permute(3, 0, 1, 2) # -> [C, F, H, W]
-        control_video = control_video.unsqueeze(0)         # -> [1, C, F, H, W]
-        final_input_video = control_video.to(device=DEVICE, dtype=torch.bfloat16)
+        ref_frames = rearrange(ref_frames, "f h w c -> c f h w")
+        control_video = rearrange(landmark_frames, "f h w c -> c f h w")
 
         # 2. Prepare aligned face for pipeline (using numpy)
         face_helper.clean_all()
-        face_helper.read_image(source_image_np[:, :, ::-1])
+        face_helper.read_image(ref_frames_np[:, :, ::-1])
         face_helper.get_face_landmarks_5(only_center_face=True)
         face_helper.align_warp_face()
         aligned_face_bgr = face_helper.cropped_faces[0]
         aligned_face_np = aligned_face_bgr[:, :, ::-1]
+        aligned_face = torch.from_numpy(aligned_face_np).float().permute(2, 0, 1)
 
-        # 3. Run Sampler
-        pipeline_args = {
-            "image_face": Image.fromarray(aligned_face_np),
-            "image": Image.fromarray(source_image_np),
-            "control_video": final_input_video,
-            "prompt": "", 
-            "generator": generator,
-            "guidance_scale": guidance_scale,
-            "num_inference_steps": num_inference_steps,
-            "num_frames": num_frames,
-            "height": height,
-            "width": width,
-            "output_type": "pt",
-        }
+        mask = mask.unsqueeze(0)
 
-        if inpaint_mode:
-            if source_video is None or mask is None:
-                raise ValueError("Inpaint mode requires 'source_video' and 'mask' inputs.")
-            video_for_pipeline = source_video.permute(3, 0, 1, 2).unsqueeze(0)
-            pipeline_args["video"] = video_for_pipeline.to(device=DEVICE, dtype=torch.bfloat16)
-            pipeline_args["strength"] = denoise
-
-            # support per-frame mask stacks [F, H, W] or a single 2D mask [H, W]
-            if isinstance(mask, torch.Tensor) and mask.ndim == 3:
-                mask_for_pipeline = mask.unsqueeze(0).unsqueeze(1)  # [1, 1, F, H, W]
-            else:
-                mask_for_pipeline = mask.unsqueeze(0).unsqueeze(0).unsqueeze(0).repeat(1, 1, num_frames, 1, 1)
-            pipeline_args["mask"] = mask_for_pipeline.to(device=DEVICE, dtype=torch.bfloat16)
-            
-            # Run inpaint pipeline and return full frames directly
-            with torch.no_grad():
-                video_tensor = pipe(**pipeline_args).frames
-            #output_tensors = [torch.from_numpy(np.array(frame)).float() / 255.0 for frame in video_frames_pil]
-            #video_tensor = torch.stack(output_tensors)
-        else:
-            with torch.no_grad():
-            # The pipeline now returns a tensor with shape (B, F, C, H, W)
-                video_tensor = pipe(**pipeline_args).frames
-
-                # ComfyUI's video nodes expect a tensor of shape (F, H, W, C).
-                # We need to convert from (1, F, C, H, W) to (F, H, W, C).
+        if ref_frames.shape != control_video.shape:
+            raise ValueError(f"Reference frame shape doesn't match control video shape")
         
-        # Squeeze the batch dimension (from 1 to none) -> (F, C, H, W)
-        video_tensor_squeezed = video_tensor.squeeze(0)
+        if ref_frames.shape != (3, 49, 480, 720):
+            raise ValueError(f"49 frames of 480x720 expected, got {ref_frames.shape}")
         
-        # Permute the dimensions to match the expected format -> (F, H, W, C)
-        final_video_tensor = video_tensor_squeezed.permute(0, 2, 3, 1)
+        if mask.shape != (1, 49, 480, 720):
+            raise ValueError(f"Mask shape should be (1, 49, 480, 720), got {mask.shape}")
 
-        return (final_video_tensor.float(),)
+        # 3. Run Sampler (returns (B, C, T, H, W))
+        video = pipe.full_inference(
+            ref_videos=[ref_frames],
+            driving_videos=[control_video],
+            pixel_masks=[mask],
+            identity_images=[aligned_face],
+            height=480,
+            width=720,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            generator=generator,
+        )
+        
+        # Squeeze the batch dimension -> (F, C, H, W)
+        video = video.squeeze(0)
+        video = rearrange(video, "c f h w -> f h w c")
 
-
+        return (video.float(),)
 
 # --------------------------------------------------------------------------------
 # --- REGISTRATION ---
