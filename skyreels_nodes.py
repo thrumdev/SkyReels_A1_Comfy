@@ -249,6 +249,15 @@ class SkyReelsPrepareDrivingImagesFromVideo:
                 driving_image_list=[driving_face_crop_np]
             )
 
+            if not animated_lmk_imgs:
+                print(f"Warning: Landmark generation failed for frame {i}. Reusing last successful frame.")
+                if all_landmark_frames:
+                    all_landmark_frames.append(all_landmark_frames[-1])
+                else:
+                    # If the first frame fails, we have nothing to reuse. Append a blank canvas.
+                    all_landmark_frames.append(np.zeros_like(source_frame))
+                continue
+
             lmk_img = animated_lmk_imgs[0]
 
 
@@ -389,12 +398,7 @@ class SkyreelsPrepareDrivingImagesFromData:
 
         # 3. Unpack the blended driving_data
         # The data can be a 3-element tuple from the blend node or a 5-element from the get node
-        if len(driving_data) == 5:
-            _, driving_outputs, _, weights_473, weights_468 = driving_data
-        elif len(driving_data) == 3:
-            driving_outputs, weights_473, weights_468 = driving_data
-        else:
-            raise ValueError(f"Unexpected driving_data tuple length: {len(driving_data)}")
+        _, driving_outputs, _, weights_473, weights_468 = driving_data
 
         # 4. Call preprocess_lmk3d_from_outputs to generate animated landmark images
         animated_lmk_imgs = processor.preprocess_lmk3d_from_outputs(

@@ -149,9 +149,15 @@ class FaceAnimationProcessor:
     def process_source_image(self, image_rgb, input_size=224):
         image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
         mediapipe_utils = MediaPipeUtils()
-        kpt_mediapipe, _, _, mediapipe_eye_pose = mediapipe_utils.run_mediapipe(image_bgr)
+        mediapipe_results = mediapipe_utils.run_mediapipe(image_bgr)
+        if mediapipe_results is None:
+            return None, None, None
+        
+        kpt_mediapipe, _, _, mediapipe_eye_pose = mediapipe_results
         if kpt_mediapipe is None:
-            raise ValueError('Cannot find facial landmarks in the source image')
+            # This case might be redundant if run_mediapipe handles it, but it's safe to keep.
+            return None, None, None
+            
         kpt_mediapipe = kpt_mediapipe[..., :2]
         tform, _ = self.crop_face(image_rgb, kpt_mediapipe, scale=1.4, image_size=input_size)
         cropped_image = warp(image_rgb, tform.inverse, output_shape=(input_size, input_size), preserve_range=True).astype(np.uint8)
@@ -198,9 +204,89 @@ class FaceAnimationProcessor:
             driving_outputs.append(outputs)
             driving_tforms.append(tform)
         return driving_frames, driving_outputs, driving_tforms, weights_473, weights_468
+    
+    def blend_driving_outputs(self, 
+                              driving_data_A, 
+                              driving_data_B,
+                              expression_blend_ratio=0.5,
+                              jaw_blend_ratio=0.5,
+                              eye_blend_ratio=0.5):
+        """
+        Blends the parameter dictionaries from two processed driving videos.
+
+        Args:
+            driving_data_A (tuple): The output of process_driving_img_list for video A.
+                                    (driving_outputs, weights_473, weights_468)
+            driving_data_B (tuple): The output of process_driving_img_list for video B.
+            expression_blend_ratio (float): Blend ratio for expressions. 0.0=A, 1.0=B.
+            jaw_blend_ratio (float): Blend ratio for jaw. 0.0=A, 1.0=B.
+            eye_blend_ratio (float): Blend ratio for eye pose, eyelids, and iris weights. 0.0=A, 1.0=B.
+
+        Returns:
+            tuple: A new set of (driving_outputs, weights_473, weights_468) containing
+                   the blended parameters, ready for rendering.
+        """
+        # 1. Assign the outputs for video A and B
+        _, driving_outputs_A, _, weights_473_A, weights_468_A = driving_data_A
+        _, driving_outputs_B, _, weights_473_B, weights_468_B = driving_data_B
+
+        blended_driving_outputs = []
+        blended_weights_473 = []
+        blended_weights_468 = []
+        num_frames = min(len(driving_outputs_A), len(driving_outputs_B))
+
+        for i in range(num_frames):
+            # 2. Split driving_outputs A and B into their constituent parts
+            params_A = driving_outputs_A[i]
+            params_B = driving_outputs_B[i]
+
+            # Create a new dictionary for the blended parameters.
+            # Start with a copy of A's params, as pose is pinned to A.
+            new_params = params_A.copy()
+
+            # 3. Blend between corresponding values
+            # Expression
+            exp_A = params_A['expression_params']
+            exp_B = params_B['expression_params']
+            new_params['expression_params'] = (1.0 - expression_blend_ratio) * exp_A + expression_blend_ratio * exp_B
+
+            # Jaw
+            jaw_A = params_A['jaw_params']
+            jaw_B = params_B['jaw_params']
+            new_params['jaw_params'] = (1.0 - jaw_blend_ratio) * jaw_A + jaw_blend_ratio * jaw_B
+
+            # Eye Pose
+            eye_A = params_A['eye_pose_params']
+            eye_B = params_B['eye_pose_params']
+            new_params['eye_pose_params'] = (1.0 - eye_blend_ratio) * eye_A + eye_blend_ratio * eye_B
+
+            # Eyelids (using the same ratio as eye pose)
+            eyelid_A = params_A['eyelid_params']
+            eyelid_B = params_B['eyelid_params']
+            new_params['eyelid_params'] = (1.0 - eye_blend_ratio) * eyelid_A + eye_blend_ratio * eyelid_B
+
+            blended_driving_outputs.append(new_params)
+
+            # 4. Blend Iris Weights (using the same ratio as eye pose)
+            # The blendable part is the first element (relative coordinates)
+            coords_473_A = weights_473_A[i][0]
+            coords_473_B = weights_473_B[i][0]
+            blended_coords_473 = (1.0 - eye_blend_ratio) * coords_473_A + eye_blend_ratio * coords_473_B
+            blended_weights_473.append([blended_coords_473] + weights_473_A[i][1:])
+
+            coords_468_A = weights_468_A[i][0]
+            coords_468_B = weights_468_B[i][0]
+            blended_coords_468 = (1.0 - eye_blend_ratio) * coords_468_A + eye_blend_ratio * coords_468_B
+            blended_weights_468.append([blended_coords_468] + weights_468_A[i][1:])
+
+
+        # 5. Repackage and return the new set of outputs
+        return (blended_driving_outputs, blended_weights_473, blended_weights_468)
 
     def preprocess_lmk3d(self, source_image=None, driving_image_list=None):
         source_outputs, source_tform, image_original = self.process_source_image(source_image)
+        if source_outputs is None:
+            return []
         _, driving_outputs, driving_video_tform, weights_473, weights_468 = self.process_driving_img_list(driving_image_list)
         driving_outputs_list = []
         source_pose_init = source_outputs['pose_params'].clone()
@@ -232,6 +318,8 @@ class FaceAnimationProcessor:
     def preprocess_lmk3d_from_outputs(self, source_image=None, driving_outputs=None, 
                                       weights_473=None, weights_468=None):
         source_outputs, source_tform, image_original = self.process_source_image(source_image)
+        if source_outputs is None:
+            return []
         driving_outputs_list = []
         source_pose_init = source_outputs['pose_params'].clone()
         driving_outputs_pose = [outputs['pose_params'] for outputs in driving_outputs]
@@ -241,12 +329,7 @@ class FaceAnimationProcessor:
             source_outputs['expression_params'] = outputs['expression_params']
             source_outputs['jaw_params'] = outputs['jaw_params']
             source_outputs['eye_pose_params'] = outputs['eye_pose_params']
-            source_matrix = self.rodrigues_to_matrix(source_pose_init)
-            driving_matrix_0 = self.rodrigues_to_matrix(driving_outputs[0]['pose_params'])
-            driving_matrix_i = self.rodrigues_to_matrix(driving_outputs[i]['pose_params'])
-            relative_rotation = torch.inverse(driving_matrix_0) @ driving_matrix_i
-            new_rotation = source_matrix @ relative_rotation
-            source_outputs['pose_params'] = self.matrix_to_rodrigues(new_rotation)
+            source_outputs['pose_params'] = outputs['pose_params']
             source_outputs['eyelid_params'] = outputs['eyelid_params']
             flame_output = self.flame.forward(source_outputs)
             renderer_output = self.renderer.forward(
